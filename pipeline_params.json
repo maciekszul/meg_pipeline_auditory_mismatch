@@ -1,0 +1,18 @@
+{
+    "data_path": "/cubric/scratch/c1557187/aud_mis",
+
+    "downsample_convert_filter": false,
+    "downsample_to": 250,
+
+    "MANUALLY_1": "manual_head_coreg.py - '*.pos' file has to be in '.ds' directory",
+    "MANUALLY_2": "manual_ICA_inspection.py - ICA components to reject from manual inspection + EOGs correlation",
+
+    "apply_ICA": true,
+    "epochs": true,
+
+    "fwd_solution": true,
+    "cov_matrix": true,
+    "inv_operator": true,
+    "INVERSE_SOLUTIONS": ["dSPM", "eLORETA", "sLORETA"],
+    "compute_inverse": [false, "dSPM"]
+}
