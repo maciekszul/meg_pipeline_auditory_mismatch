@@ -253,6 +253,14 @@ if pipeline_params["fwd_solution"]:
         spacing="ico5", 
         add_dist=False
     )
+
+    src_file_out = op.join(
+        meg_subj_path,
+        "{}-src.fif".format(subj)
+    )
+
+    mne.write_source_spaces(src_file_out, src)
+
     conductivity = (0.3,)
     model = mne.make_bem_model(
         subject=subj,
@@ -262,6 +270,13 @@ if pipeline_params["fwd_solution"]:
     )
 
     bem = mne.make_bem_solution(model)
+
+    bem_file_out = op.join(
+        meg_subj_path,
+        "{}-bem.fif".format(subj)
+    )
+
+    mne.write_bem_solution(bem_file_out, bem)
 
     raw_files = files.get_files(
         meg_subj_path,
