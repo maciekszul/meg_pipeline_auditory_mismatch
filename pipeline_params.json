@@ -1,18 +1,8 @@
 {
-    "data_path": "/cubric/scratch/c1557187/aud_mis",
-
-    "downsample_convert_filter": false,
-    "downsample_to": 250,
-
-    "MANUALLY_1": "manual_head_coreg.py - '*.pos' file has to be in '.ds' directory",
-    "MANUALLY_2": "manual_ICA_inspection.py - ICA components to reject from manual inspection + EOGs correlation",
-
-    "apply_ICA": true,
-    "epochs": true,
-
-    "fwd_solution": true,
-    "cov_matrix": true,
-    "inv_operator": true,
-    "INVERSE_SOLUTIONS": ["dSPM", "eLORETA", "sLORETA"],
-    "compute_inverse": [false, "dSPM"]
+    "path": "/cubric/scratch/c1557187/aud_mis",
+    "freesurfer": "/cubric/scratch/c1557187/MRI_337/FS_OUTPUT",
+    "downsample": 256,
+    "convert_downsample_filter": false,
+    "apply_ica_epoch": true
+    
 }

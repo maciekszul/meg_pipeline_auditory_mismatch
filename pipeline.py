@@ -1,484 +1,265 @@
+import time
+named_tuple = time.localtime() # get struct_time
+time_string = time.strftime("%m/%d/%Y, %H:%M:%S", named_tuple)
+print("start:", time_string)
+
 import mne
 from mne.preprocessing import ICA
 import os.path as op
 import json
-import argparse
 from tools import files
 import numpy as np
-import pandas as pd
+import sys
 
-json_file = "pipeline_params.json"
 
-# argparse input
-des = "pipeline script"
-parser = argparse.ArgumentParser(description=des)
-parser.add_argument(
-    "-f", 
-    type=str, 
-    nargs=1,
-    default=json_file,
-    help="JSON file with pipeline parameters"
-)
+# parsing command line arguments
+try:
+    subj_index = int(sys.argv[1])
+except:
+    print("incorrect arguments")
+    sys.exit()
 
-parser.add_argument(
-    "-n", 
-    type=int, 
-    help="id list index"
-)
+try:
+    json_file = sys.argv[2]
+    print(json_file)
+except:
+    json_file = "pipeline_params.json"
+    print(json_file)
 
-args = parser.parse_args()
-params = vars(args)
-json_file = params["f"]
-subj_index = params["n"]
-
-# read the pipeline params
+# open json file
 with open(json_file) as pipeline_file:
-    pipeline_params = json.load(pipeline_file)
+    parameters = json.load(pipeline_file)
 
-# paths
-data_path = pipeline_params["data_path"]
-fs_path = op.join(data_path, "MRI")
+# prepare paths
+data_path = parameters["path"]
+subjects_dir = parameters["freesurfer"]
 
-subjs = files.get_folders_files(fs_path, wp=False)[0]
+# subjects
+subjs = files.get_folders_files(subjects_dir, wp=False)[0]
+subjs = [i for i in subjs if "00" in i]
 subjs.sort()
-subjs = [i for i in subjs if "fsaverage" not in i]
 subj = subjs[subj_index]
 
-meg_subj_path = op.join(data_path,"MEG", subj)
-beh_subj_path = op.join(data_path,"BEH", subj)
+# processing parameters
+down_freq = parameters["downsample"]
+chpi = [
+    "HLC0011", "HLC0012", "HLC0013", 
+    "HLC0021", "HLC0022", "HLC0023",
+    "HLC0031", "HLC0032", "HLC0033"
+]
 
-verb=False
+subj_path = op.join(data_path, "MEG", subj)
 
-if pipeline_params["downsample_convert_filter"]:
-    raw_ds = files.get_folders_files(
-        meg_subj_path,
+if parameters["convert_downsample_filter"]:
+    all_ds = files.get_folders_files(
+        subj_path,
         wp=True
     )[0]
-    raw_ds = [i for i in raw_ds if ".ds" in i]
+    all_ds = [i for i in all_ds if ".ds" in i]
+    all_ds.sort()
+    for ix, ds in enumerate(all_ds):
+        print(ds)
+        # output paths
+        raw_out = op.join(
+            subj_path,
+            "raw-{0}-raw.fif".format(str(ix).zfill(3))
+        )
 
-    for ix, raw_path in enumerate(raw_ds):
+        eve_out = op.join(
+            subj_path,
+            "events-{0}-eve.fif".format(str(ix).zfill(3))
+        )
+
+        ica_out = op.join(
+            subj_path,
+            "ica-{0}-ica.fif".format(str(ix).zfill(3))
+        )
+
+        # load data
         raw = mne.io.read_raw_ctf(
-            raw_path,
+            ds,
             preload=True,
-            verbose=False
+            clean_names=True, 
+            system_clock="ignore"
         )
 
-        picks_meg = mne.pick_types(
-            raw.info, 
-            meg=True, 
-            eeg=False, 
-            eog=False, 
-            ecg=False, 
-            ref_meg=False
-        )
+        # set channel categories
+
+        set_ch = {
+            "EEG057":"eog", 
+            "EEG058": "eog", 
+            "UPPT001": "stim"
+            }
+        raw.set_channel_types(set_ch)
 
         events = mne.find_events(
-            raw,
-            stim_channel="UPPT001"
+            raw
+        )
+
+        # trimming the raws
+        raw_sfreq = raw.info["sfreq"]
+        try:
+            crop_min = events[0][0] / raw_sfreq - 2
+            crop_max = events[-1][0] / raw_sfreq + 2
+            raw.crop(tmin=crop_min, tmax=crop_max)
+        except:
+            crop_min = events[0][0] / raw_sfreq - 2
+            crop_max = events[-1][0] / raw_sfreq + 1
+            raw.crop(tmin=crop_min, tmax=crop_max)
+        
+        filter_picks = mne.pick_types(
+            raw.info,
+            meg=True,
+            misc=False,
+            stim=False,
+            eog=True
+        )
+
+        raw = raw.filter(
+            0.01,
+            None,
+            method="fir",
+            phase="zero-double",
+            n_jobs=-1,
+            picks=filter_picks
+        )
+        
+
+        raw = raw.notch_filter(
+            np.arange(50, 251, 50),
+            picks=filter_picks,
+            filter_length="auto",
+            method="fir",
+            n_jobs=-1,
+            phase="zero-double"
+        )
+
+        raw = raw.filter(
+            None,
+            120,
+            method="fir",
+            phase="zero-double",
+            n_jobs=-1,
+            picks=filter_picks
         )
 
         raw, events = raw.copy().resample(
-            pipeline_params["downsample_to"], 
+            down_freq, 
             npad="auto", 
             events=events,
             n_jobs=-1,
         )
-        print(subj, ix, "resampled")
-        raw = raw.filter(
-            0.1,
-            80,
-            picks=picks_meg,
-            n_jobs=-1,
-            method="fir",
-            phase="minimum"
-        )
-        print(subj, ix, "filtered")
-        raw_out_path = op.join(
-            meg_subj_path,
-            "raw-{}-raw.fif".format(str(ix).zfill(3))
-        )
-        events_out_path = op.join(
-            meg_subj_path,
-            "{}-eve.fif".format(str(ix).zfill(3))
-        )
 
-        ica_out_path = op.join(
-            meg_subj_path,
-            "{}-ica.fif".format(str(ix).zfill(3))
-        )
-
+        # ICA
         n_components = 50
-        method = "extended-infomax"
-        reject = dict(mag=4e-12)
+        method = "fastica"
+        max_iter = 10000
 
         ica = ICA(
             n_components=n_components, 
-            method=method
+            method=method,
+            max_iter=max_iter
         )
 
         ica.fit(
-            raw, 
-            picks=picks_meg,
-            reject=reject,
-            verbose=verb
+            raw
         )
-        print(subj, ix, "ICA_fit")
-        raw.save(raw_out_path, overwrite=True)
-        mne.write_events(events_out_path, events)
-        ica.save(ica_out_path)
-        print(subj, ix, "saved")
 
-if pipeline_params["apply_ICA"]:
-    ica_json = files.get_files(
-        meg_subj_path,
-        "",
-        "ica-rej.json"
-    )[2][0]
+        # save the files
+        raw.save(raw_out)
+        ica.save(ica_out)
+        mne.write_events(eve_out, events)
 
-    raw_files = files.get_files(
-        meg_subj_path,
+    named_tuple = time.localtime() # get struct_time
+    time_string = time.strftime("%m/%d/%Y, %H:%M:%S", named_tuple)
+    print("converting, filtering and downsampling done:", time_string)
+
+# MANUAL ICA COMPONENT INSPECTION use ICA_inspection.py
+
+if parameters["apply_ica_epoch"]:
+    raws = files.get_files(
+        subj_path,
         "raw",
-        "-raw.fif",
-        wp=False
-    )[2]
+        "-raw.fif"
+    )[0]
+    raws.sort()
 
-    comp_ICA_json_path = op.join(
-        meg_subj_path,
-        "{}-ica-rej.json".format(str(subj).zfill(3))
+    icas = files.get_files(
+        subj_path,
+        "ica",
+        "-ica.fif"
+    )[0]
+    icas.sort()
+
+    evts = files.get_files(
+        subj_path,
+        "events",
+        "-eve.fif"
+    )[0]
+    evts.sort()
+
+    components_file_path = op.join(
+        subj_path,
+        "rejected-components.json"
     )
 
-    ica_files = files.get_files(
-        meg_subj_path,
-        "",
-        "-ica.fif",
-        wp=False
-    )[2]
-    
-    with open(ica_json) as data:
+    with open(components_file_path) as data:
         components_rej = json.load(data)
 
-    for k in components_rej.keys():
-        raw_path = op.join(
-            meg_subj_path,
-            files.items_cont_str(raw_files, k, sort=True)[0]
-        )
-        ica_path = op.join(
-            meg_subj_path,
-            files.items_cont_str(ica_files, k, sort=True)[0]
-        )
-        
-        raw = mne.io.read_raw_fif(
-            raw_path,
-            preload=True,
-            verbose=verb
-        )
+    all_files = list(zip(raws, icas, evts))
 
-        ica = mne.preprocessing.read_ica(ica_path)
-        raw_ica = ica.apply(
-            raw,
-            exclude=components_rej[k]
-        )
-
-        raw_ica.save(
-            raw_path,
-            fmt="single",
-            split_size="2GB",
-            overwrite=True
-        )
-
-        print(raw_path)
-
-if pipeline_params["epochs"]:
-    raw_files = files.get_files(
-        meg_subj_path,
-        "raw",
-        "-raw.fif",
-        wp=True
-    )[2]
-    raw_files.sort()
-
-    eve_files = files.get_files(
-        meg_subj_path,
-        "",
-        "-eve.fif",
-        wp=True
-    )[2]
-    eve_files.sort()
-
-    all_files = zip(raw_files, eve_files)
-    for raw_file, event_file, in all_files:
+    for raw_file, ica_file, events_path in all_files:
 
         raw = mne.io.read_raw_fif(
             raw_file,
-            preload=False,
-            verbose=verb
-        )
-
-        picks_meg = mne.pick_types(
-            raw.info, 
-            meg=True, 
-            eeg=False, 
-            eog=False, 
-            ecg=False, 
-            ref_meg=False
-        )
-
-        events = mne.read_events(
-            event_file
-        )
-
-        tmin, tmax = (-0.2, 0.5)
-        baseline = (tmin, 0.0)
-        epochs = mne.Epochs(
-            raw,
-            events,
-            picks=picks_meg,
-            tmin=tmin,
-            tmax=tmax,
-            detrend=1,
-            baseline=baseline
-        )
-        epochs.apply_baseline(baseline)
-
-        all_file_out = op.join(
-            meg_subj_path,
-            "all-{}-epo.fif".format(op.split(raw_file)[1].split("-")[1])
-        )
-        epochs.save(all_file_out)
-
-if pipeline_params["fwd_solution"]:
-    src = mne.setup_source_space(
-        subject=subj, 
-        subjects_dir=fs_path, 
-        spacing="ico5", 
-        add_dist=False
-    )
-
-    src_file_out = op.join(
-        meg_subj_path,
-        "{}-src.fif".format(subj)
-    )
-
-    mne.write_source_spaces(src_file_out, src)
-
-    conductivity = (0.3,)
-    model = mne.make_bem_model(
-        subject=subj,
-        ico=5,
-        conductivity=conductivity,
-        subjects_dir=fs_path
-    )
-
-    bem = mne.make_bem_solution(model)
-
-    bem_file_out = op.join(
-        meg_subj_path,
-        "{}-bem.fif".format(subj)
-    )
-
-    mne.write_bem_solution(bem_file_out, bem)
-
-    raw_files = files.get_files(
-        meg_subj_path,
-        "raw",
-        "-raw.fif"
-    )[2]
-    raw_files.sort()
-
-    epo_files = files.get_files(
-        meg_subj_path,
-        "all",
-        "-epo.fif"
-    )[2]
-    epo_files.sort()
-
-    trans_file = op.join(
-        meg_subj_path,
-        "{}-trans.fif".format(subj)
-    )
-
-    all_files = zip(raw_files, epo_files)
-    for raw_file, epo_file in all_files:
-        file_id = op.split(raw_file)[1].split("-")[1]
-
-        fwd_out = op.join(
-            meg_subj_path,
-            "fwd-{}-fwd.fif".format(file_id)
-        )
-
-        fwd = mne.make_forward_solution(
-            raw_file,
-            trans=trans_file,
-            src=src,
-            bem=bem,
-            meg=True,
-            eeg=False,
-            mindist=5.0,
-            n_jobs=-1
-        )
-        
-        mne.write_forward_solution(
-            fwd_out, 
-            fwd, 
-            verbose=verb
-        )
-
-        print(fwd_out)
-
-if pipeline_params["cov_matrix"]:
-    raw_files = files.get_files(
-        meg_subj_path,
-        "raw",
-        "-raw.fif"
-    )[2]
-    raw_files.sort()
-    for raw_file in raw_files:
-        file_id = op.split(raw_file)[1].split("-")[1]
-
-        cov_mx_out = op.join(
-            meg_subj_path,
-            "mx-{}-cov.fif".format(file_id)
-        )
-
-        raw = mne.io.read_raw_fif(
-            raw_file, 
-            preload=True,
-            verbose=verb
-        )
-
-        picks = mne.pick_types(
-            raw.info, 
-            meg=True, 
-            eeg=False, 
-            stim=False, 
-            eog=False, 
-            ref_meg="auto", 
-            exclude="bads"
-        )
-
-        noise_cov = mne.compute_raw_covariance(
-            raw, 
-            method="auto", 
-            rank=None,
-            picks=picks,
-            n_jobs=-1
-        )
-
-        noise_cov.save(
-            cov_mx_out
-        )
-
-        print(cov_mx_out)
-
-if pipeline_params["inv_operator"]:
-
-    epo_files = files.get_files(
-        meg_subj_path,
-        "all",
-        "-epo.fif"
-    )[2]
-    epo_files.sort()
-    cov_files = files.get_files(
-        meg_subj_path,
-        "mx",
-        "-cov.fif"
-    )[2]
-    cov_files.sort()
-    fwd_files = files.get_files(
-        meg_subj_path,
-        "fwd",
-        "-fwd.fif"
-    )[2]
-    fwd_files.sort()
-
-    all_files = zip(epo_files, cov_files, fwd_files)
-
-    for epo_path, cov_path, fwd_path in all_files:
-        file_id = op.split(epo_path)[1].split("-")[1]
-
-        inv_out = op.join(
-            meg_subj_path,
-            "inv-{}-inv.fif".format(file_id)
-        )
-
-        fwd = mne.read_forward_solution(fwd_path)
-
-        cov = mne.read_cov(cov_path)
-
-        epochs = mne.read_epochs(epo_path)
-
-        inv = mne.minimum_norm.make_inverse_operator(
-            epochs.info,
-            fwd,
-            cov,
-            loose=0.2,
-            depth=0.8
-        )
-
-        mne.minimum_norm.write_inverse_operator(
-            inv_out,
-            inv
-        )
-
-        print(inv_out)
-
-
-if pipeline_params["compute_inverse"][0]:
-    method_dict = {
-        "dSPM": (8, 12, 15),
-        "sLORETA": (3, 5, 7),
-        "eLORETA": (0.75, 1.25, 1.75)
-    }
-
-    method = pipeline_params["compute_inverse"][1]
-    snr = 3.
-    lambda2 = 1. / snr ** 2
-    lims = method_dict[method]
-
-    epo_files = files.get_files(
-        meg_subj_path,
-        "all",
-        "-epo.fif"
-    )[2]
-    epo_files.sort()
-
-    inv_files = files.get_files(
-        meg_subj_path,
-        "inv",
-        "-inv.fif"
-    )[2]
-    inv_files.sort()
-
-    all_files = zip(epo_files, inv_files)
-
-    for epo_path, inv_path in all_files:
-        file_id = op.split(epo_path)[1].split("-")[1]
-
-        stc_out = op.join(
-            meg_subj_path,
-            "stc-{}"
-        )
-
-        epo = mne.read_epochs(
-            epo_path,
-            verbose=verb,
             preload=True
         )
-
-        epo = epo.average()
-
-        inv = mne.minimum_norm.read_inverse_operator(
-            inv_path,
-            verbose=verb
+        file_n = raw_file.split("/")[-1]
+        comp = components_rej[file_n]
+        ica = mne.preprocessing.read_ica(ica_file)
+        events = mne.read_events(events_path)
+        raw = ica.apply(
+            raw,
+            exclude=comp
         )
 
-        stc = mne.minimum_norm.apply_inverse(
-            epo,
-            inv,
-            lambda2,
-            method=method,
-            pick_ori=None,
-            verbose=True
+        filter_picks = mne.pick_types(
+            raw.info,
+            meg=True,
+            ref_meg=True,
+            stim=False,
+            eog=False,
+            misc=False
         )
 
-        # stc.save(stc_out)
+        raw = raw.filter(
+            None,
+            45,
+            method="fir",
+            phase="zero-double",
+            n_jobs=-1,
+            picks=filter_picks
+        )
+
+        epo_file = op.join(
+            subj_path,
+            "lp45-{}-epo.fif".format(file_n.split("-")[1])
+        )
+
+        onsets = mne.pick_events(events, exclude=[0])
+        epochs =mne.Epochs(
+            raw,
+            onsets,
+            tmin=-0.1,
+            tmax=0.4,
+            baseline=None
+        )
+
+        epochs.save(epo_file)
+
+    named_tuple = time.localtime() # get struct_time
+    time_string = time.strftime("%m/%d/%Y, %H:%M:%S", named_tuple)
+    print("applying ICA, filtering and epoching done:", time_string)
+
+# use: ipython --gui=qt5 head_coregistration.py and head_coreg_check.py manually
+# to produce -trans.fif files for source localisation
